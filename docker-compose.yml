@@ -1,0 +1,9 @@
+services:
+  ai-flow:
+    build: .
+    container_name: ai-flow-daily
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./automation.log:/app/automation.log

@@ -1,0 +1,23 @@
+# Core
+python-dotenv==1.1.0
+requests==2.32.3
+aiohttp==3.11.12
+certifi
+
+# Telegram
+python-telegram-bot==21.10
+
+# RSS
+feedparser==6.0.11
+
+# Scheduling
+APScheduler==3.11.0
+
+# Notion
+notion-client==2.3.0
+
+# Image processing
+Pillow==11.1.0
+
+# Logging
+colorlog==6.9.0
