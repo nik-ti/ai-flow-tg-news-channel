@@ -65,12 +65,36 @@ async def send_preview(bot, article_data: dict) -> str | None:
                 parse_mode="HTML",
             )
         elif creative_type == "image" and creative_url and creative_url != "none":
-            await bot.send_photo(
-                chat_id=ADMIN_CHANNEL_ID,
-                photo=creative_url,
-                caption=post_text,
-                parse_mode="HTML",
-            )
+            # Download and send as bytes to bypass Telegram fetch errors
+            try:
+                img_resp = sync_requests.get(creative_url, timeout=30, headers={
+                    "User-Agent": "Mozilla/5.0"
+                })
+                img_resp.raise_for_status()
+                photo_bytes = BytesIO(img_resp.content)
+                photo_bytes.name = "preview.jpg"
+                await bot.send_photo(
+                    chat_id=ADMIN_CHANNEL_ID,
+                    photo=photo_bytes,
+                    caption=post_text,
+                    parse_mode="HTML",
+                )
+            except Exception as img_err:
+                log_error(f"[Telegram] Preview image download failed, trying plain URL or text: {img_err}")
+                try:
+                    await bot.send_photo(
+                        chat_id=ADMIN_CHANNEL_ID,
+                        photo=creative_url,
+                        caption=post_text,
+                        parse_mode="HTML",
+                    )
+                except Exception as tg_err:
+                    log_error(f"[Telegram] Preview photo URL also failed, sending text only: {tg_err}")
+                    await bot.send_message(
+                        chat_id=ADMIN_CHANNEL_ID,
+                        text=f"[Image omitted due to fetch error]\n\n{post_text}",
+                        parse_mode="HTML",
+                    )
         else:
             await bot.send_message(
                 chat_id=ADMIN_CHANNEL_ID,
