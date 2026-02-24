@@ -156,8 +156,7 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     bot = context.bot
     if not article_data:
         log_info(f"Callback data not in memory, fetching Notion page: {page_id}")
-        
-        article_data = notion_client.get_article_data(page_id)
+        article_data = await asyncio.to_thread(notion_client.get_article_data, page_id)
 
         if not article_data:
             await query.edit_message_text(f"⚠️ Error: Post data not found in Notion ({page_id})")
@@ -192,7 +191,7 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if result:
             # Update Notion: Posted
-            save_to_notion.mark_posted(page_id, result["post_url"])
+            await asyncio.to_thread(save_to_notion.mark_posted, page_id, result["post_url"])
 
             # Remove from pending if it was there
             if page_id in post_to_telegram.pending_posts:
@@ -211,7 +210,7 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         log_info(f"Declining post {page_id}")
         
         # Update Notion: Declined
-        save_to_notion.mark_declined(page_id)
+        await asyncio.to_thread(save_to_notion.mark_declined, page_id)
         
         # Remove from pending if it was there
         if page_id in post_to_telegram.pending_posts:
