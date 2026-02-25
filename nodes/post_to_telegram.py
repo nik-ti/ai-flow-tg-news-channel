@@ -11,7 +11,7 @@ NOTE: This node is designed to be called from main.py where the Telegram
 """
 
 import asyncio
-import requests as sync_requests
+import aiohttp
 from io import BytesIO
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from utils.config import TELEGRAM_BOT_TOKEN, ADMIN_CHANNEL_ID, MAIN_CHANNEL_ID
@@ -142,13 +142,18 @@ async def post_to_main_channel(bot, article_data: dict) -> dict | None:
                 parse_mode="HTML",
             )
         elif creative_type == "image" and creative_url and creative_url != "none":
-            # Download and send as binary (matching n8n behavior)
+            # Download image asynchronously to avoid blocking the event loop
             try:
-                img_resp = sync_requests.get(creative_url, timeout=30, headers={
-                    "User-Agent": "Mozilla/5.0"
-                })
-                img_resp.raise_for_status()
-                photo_bytes = BytesIO(img_resp.content)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        creative_url,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        ssl=False,
+                    ) as img_resp:
+                        img_resp.raise_for_status()
+                        img_data = await img_resp.read()
+                photo_bytes = BytesIO(img_data)
                 photo_bytes.name = "cover.jpg"
                 result = await bot.send_photo(
                     chat_id=MAIN_CHANNEL_ID,

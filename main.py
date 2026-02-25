@@ -149,74 +149,81 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     action, page_id = parts
 
-    # 1. Try to get data from memory first
-    article_data = post_to_telegram.pending_posts.get(page_id)
+    try:
+        # 1. Try to get data from memory first
+        article_data = post_to_telegram.pending_posts.get(page_id)
 
-    # 2. Fallback: Fetch from Notion if not in memory (stateless)
-    bot = context.bot
-    if not article_data:
-        log_info(f"Callback data not in memory, fetching Notion page: {page_id}")
-        article_data = await asyncio.to_thread(notion_client.get_article_data, page_id)
-
+        # 2. Fallback: Fetch from Notion if not in memory (stateless)
+        bot = context.bot
         if not article_data:
-            await query.edit_message_text(f"⚠️ Error: Post data not found in Notion ({page_id})")
-            return
+            log_info(f"Callback data not in memory, fetching Notion page: {page_id}")
+            article_data = await asyncio.to_thread(notion_client.get_article_data, page_id)
 
-        # Infer creative type since we don't store it explicitly in Notion properties
-        c_url = article_data.get("creative_url", "")
-        if c_url and c_url.lower().endswith((".mp4", ".mov", ".webm")):
-            article_data["creative_type"] = "video"
-        elif c_url and c_url != "none":
-            article_data["creative_type"] = "image"
-        else:
-            article_data["creative_type"] = "none"
-        
-        # Check status to prevent double-posting
-        status = article_data.get("status")
-        if status == "Posted":
-            await bot.send_message(chat_id=article_data.get("admin_channel_id", TELEGRAM_BOT_TOKEN), text=f"⚠️ This article was already posted.")
-            # Note: admin_channel_id isn't in article_data from Notion, using global default if needed or just skipping msg
-            await query.edit_message_text(f"✅ Already Posted: {article_data.get('title')}")
-            return
-        elif status == "Declined":
-            await query.edit_message_text(f"❌ Already Declined: {article_data.get('title')}")
-            return
+            if not article_data:
+                await query.edit_message_text(f"⚠️ Error: Post data not found in Notion ({page_id})")
+                return
 
-    # 3. Handle Actions
-    title_to_show = article_data.get("article_title", article_data.get("title", "Unknown"))
-    if action == "approve":
-        log_info(f"Processing approval for {page_id}")
-        
-        result = await post_to_telegram.post_to_main_channel(bot, article_data)
+            # Infer creative type since we don't store it explicitly in Notion properties
+            c_url = article_data.get("creative_url", "")
+            if c_url and c_url.lower().endswith((".mp4", ".mov", ".webm")):
+                article_data["creative_type"] = "video"
+            elif c_url and c_url != "none":
+                article_data["creative_type"] = "image"
+            else:
+                article_data["creative_type"] = "none"
+            
+            # Check status to prevent double-posting
+            status = article_data.get("status")
+            if status == "Posted":
+                await query.edit_message_text(f"✅ Already Posted: {article_data.get('title')}")
+                return
+            elif status == "Declined":
+                await query.edit_message_text(f"❌ Already Declined: {article_data.get('title')}")
+                return
 
-        if result:
-            # Update Notion: Posted
-            await asyncio.to_thread(save_to_notion.mark_posted, page_id, result["post_url"])
+        # 3. Handle Actions
+        title_to_show = article_data.get("article_title", article_data.get("title", "Unknown"))
+        if action == "approve":
+            log_info(f"Processing approval for {page_id}")
+            
+            result = await post_to_telegram.post_to_main_channel(bot, article_data)
 
+            if result:
+                # Update Notion: Posted
+                await asyncio.to_thread(save_to_notion.mark_posted, page_id, result["post_url"])
+
+                # Remove from pending if it was there
+                if page_id in post_to_telegram.pending_posts:
+                     del post_to_telegram.pending_posts[page_id]
+
+                # Edit admin message
+                await query.edit_message_text(f"✅ Approved & Posted: {title_to_show}")
+
+                # Trigger RU translation workflow
+                asyncio.create_task(_run_ru_pipeline(bot, article_data))
+
+            else:
+                await query.edit_message_text(f"⚠️ Error posting to main channel.")
+
+        elif action == "decline":
+            log_info(f"Declining post {page_id}")
+            
+            # Update Notion: Declined
+            await asyncio.to_thread(save_to_notion.mark_declined, page_id)
+            
             # Remove from pending if it was there
             if page_id in post_to_telegram.pending_posts:
                  del post_to_telegram.pending_posts[page_id]
 
-            # Edit admin message
-            await query.edit_message_text(f"✅ Approved & Posted: {title_to_show}")
+            await query.edit_message_text(f"❌ Declined: {title_to_show}")
 
-            # Trigger RU translation workflow
-            asyncio.create_task(_run_ru_pipeline(bot, article_data))
-
-        else:
-            await query.edit_message_text(f"⚠️ Error posting to main channel.")
-
-    elif action == "decline":
-        log_info(f"Declining post {page_id}")
-        
-        # Update Notion: Declined
-        await asyncio.to_thread(save_to_notion.mark_declined, page_id)
-        
-        # Remove from pending if it was there
-        if page_id in post_to_telegram.pending_posts:
-             del post_to_telegram.pending_posts[page_id]
-
-        await query.edit_message_text(f"❌ Declined: {title_to_show}")
+    except Exception as e:
+        log_error(f"[Approval] Unhandled error: {e}")
+        send_error(f"Approval handler crashed: {e}", node_name="handle_approval")
+        try:
+            await query.edit_message_text(f"⚠️ Error processing action: {str(e)[:200]}")
+        except Exception:
+            pass
 
 
 async def _run_ru_pipeline(bot, article_data: dict) -> None:
@@ -224,14 +231,14 @@ async def _run_ru_pipeline(bot, article_data: dict) -> None:
     try:
         en_text = article_data["post_text"]
 
-        # 1. Translate to Russian
-        ru_text = translator.execute(en_text)
+        # 1. Translate to Russian (sync call → run in thread)
+        ru_text = await asyncio.to_thread(translator.execute, en_text)
         if not ru_text:
             log_error("[RU Pipeline] Translation failed, skipping RU post")
             return
 
-        # 2. Quality review
-        ru_text = translation_reviewer.execute(ru_text)
+        # 2. Quality review (sync call → run in thread)
+        ru_text = await asyncio.to_thread(translation_reviewer.execute, ru_text)
 
         # 3. Post to Russian channel
         await post_to_ru.execute(
