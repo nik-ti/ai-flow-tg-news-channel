@@ -72,6 +72,39 @@ Monitors 5 AI news sources every 10 minutes, processes articles through an AI pi
 | Translation Reviewer | `nodes/translation_reviewer.py` | Claude Sonnet 4.5 | Quality double-check |
 | Post to RU | `nodes/post_to_ru.py` | — | Post to @aiflowdaily_ru |
 
+## Architecture
+
+### Single Process, Two Components
+
+The entire bot runs as **one Python process** (`main.py`) with two components sharing the same async event loop:
+
+1. **Telegram Bot** (`python-telegram-bot` + `run_polling`) — Listens for Approve/Decline button presses 24/7.
+2. **Scheduler** (`APScheduler`) — Fires the article pipeline every 10 minutes.
+
+### Why Threading Matters
+
+Python's async event loop is **single-threaded** — it can only do one thing at a time. It stays responsive by rapidly switching between tasks, but only when those tasks *yield control* (i.e., use `await`).
+
+The article pipeline calls external APIs (OpenRouter, Notion, image-finder) using synchronous HTTP libraries (`requests`). A synchronous call **blocks the entire event loop** until it completes — meaning the bot literally cannot process button presses while waiting for an API response.
+
+With 3 articles × 7 pipeline steps × 5-30 seconds each, the bot could be **frozen for 3-5 minutes** every 10-minute cycle.
+
+**Solution:** Every synchronous call is wrapped in `asyncio.to_thread()`, which runs it in a background thread. The event loop stays free to handle button presses instantly, even mid-pipeline.
+
+```python
+# ❌ Before: blocks the event loop for ~15 seconds
+article = summarizer.execute(article)
+
+# ✅ After: runs in background thread, event loop stays free
+article = await asyncio.to_thread(summarizer.execute, article)
+```
+
+### Error Handling
+
+- **Pipeline errors:** Caught per-article, logged, and sent to admin DM via Telegram bot.
+- **Approval handler errors:** Wrapped in `try/except` — any crash sends the error details to admin DM and updates the admin channel message.
+- **Error destination:** All error alerts are sent directly to the admin's Telegram DM (`ADMIN_USER_ID`), not to the admin channel.
+
 ## Setup
 
 1. Copy `.env.example` to `.env` and fill in all values
@@ -93,7 +126,7 @@ docker compose up -d
 ## Debugging
 
 - **Logs:** `automation.log` (file) + console output
-- **Errors:** All errors sent to admin Telegram channel
+- **Errors:** All errors sent directly to admin's Telegram DM
 - **Standalone test:** Each node has `if __name__ == "__main__"` test block
   ```bash
   python -m nodes.summarizer
