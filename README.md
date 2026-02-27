@@ -74,36 +74,38 @@ Monitors 5 AI news sources every 10 minutes, processes articles through an AI pi
 
 ## Architecture
 
-### Single Process, Two Components
+### Process Structure
 
-The entire bot runs as **one Python process** (`main.py`) with two components sharing the same async event loop:
+One Python process (`main.py`) runs two components on the same async event loop:
 
 1. **Telegram Bot** (`python-telegram-bot` + `run_polling`) — Listens for Approve/Decline button presses 24/7.
 2. **Scheduler** (`APScheduler`) — Fires the article pipeline every 10 minutes.
 
-### Why Threading Matters
+### Threading Rules
 
-Python's async event loop is **single-threaded** — it can only do one thing at a time. It stays responsive by rapidly switching between tasks, but only when those tasks *yield control* (i.e., use `await`).
-
-The article pipeline calls external APIs (OpenRouter, Notion, image-finder) using synchronous HTTP libraries (`requests`). A synchronous call **blocks the entire event loop** until it completes — meaning the bot literally cannot process button presses while waiting for an API response.
-
-With 3 articles × 7 pipeline steps × 5-30 seconds each, the bot could be **frozen for 3-5 minutes** every 10-minute cycle.
-
-**Solution:** Every synchronous call is wrapped in `asyncio.to_thread()`, which runs it in a background thread. The event loop stays free to handle button presses instantly, even mid-pipeline.
+All synchronous calls (OpenRouter, Notion, image downloads, RSS fetching) **must** be wrapped in `asyncio.to_thread()` inside `main.py`. This applies to every node's `.execute()` function and any `requests`-based HTTP call. Telegram bot calls (`bot.send_message`, etc.) are already async and do not need wrapping.
 
 ```python
-# ❌ Before: blocks the event loop for ~15 seconds
-article = summarizer.execute(article)
-
-# ✅ After: runs in background thread, event loop stays free
+# Synchronous node call — always wrap:
 article = await asyncio.to_thread(summarizer.execute, article)
+
+# Async Telegram call — use directly:
+await bot.send_message(chat_id=CHANNEL_ID, text=post_text)
 ```
+
+### Node Convention
+
+Each node in `nodes/` follows the same pattern:
+- **`execute()`** — synchronous function, takes input dict, returns output dict or `None` to skip.
+- Nodes are stateless — no shared state between calls.
+- AI nodes use `utils/openrouter_client.py` for all LLM calls.
+- Each node has a standalone `if __name__ == "__main__"` test block.
 
 ### Error Handling
 
-- **Pipeline errors:** Caught per-article, logged, and sent to admin DM via Telegram bot.
-- **Approval handler errors:** Wrapped in `try/except` — any crash sends the error details to admin DM and updates the admin channel message.
-- **Error destination:** All error alerts are sent directly to the admin's Telegram DM (`ADMIN_USER_ID`), not to the admin channel.
+- Pipeline errors are caught per-article, logged, and sent to admin's Telegram DM (`ADMIN_USER_ID`).
+- The approval handler is wrapped in `try/except` — any crash sends error details to admin DM and updates the admin channel message.
+- Error alerts use `utils/telegram_error.py` → `send_error(message, node_name)`.
 
 ## Setup
 
