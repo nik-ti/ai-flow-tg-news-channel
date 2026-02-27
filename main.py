@@ -37,41 +37,46 @@ from nodes import translator, translation_reviewer, post_to_ru
 
 
 async def process_article(article: dict, bot) -> None:
-    """Run the full AI pipeline for a single article."""
+    """Run the full AI pipeline for a single article.
+    
+    All synchronous node calls (OpenRouter, Notion, HTTP) are wrapped in
+    asyncio.to_thread() so they run in background threads and never block
+    the Telegram polling loop. This keeps buttons responsive at all times.
+    """
 
     source = article.get("source", "unknown")
     url = article.get("article_url", "unknown")
     log_section(f"Processing [{source}]: {url}")
 
-    # 1. Summarize
-    article = summarizer.execute(article)
+    # 1. Summarize (sync OpenRouter call → thread)
+    article = await asyncio.to_thread(summarizer.execute, article)
     if not article:
         log_info("  ↳ Skipped by Summarizer")
         return
 
-    # 2. Relevance check
-    article = relevance_checker.execute(article)
+    # 2. Relevance check (sync OpenRouter call → thread)
+    article = await asyncio.to_thread(relevance_checker.execute, article)
     if not article:
         log_info("  ↳ Skipped by Relevance Checker")
         return
 
-    # 3. Duplicate control
-    article = duplicate_control.execute(article)
+    # 3. Duplicate control (sync OpenRouter call → thread)
+    article = await asyncio.to_thread(duplicate_control.execute, article)
     if not article:
         log_info("  ↳ Skipped by Duplicate Control")
         return
 
-    # 4. Write post
-    post_text = post_writer.execute(article)
+    # 4. Write post (sync OpenRouter call → thread)
+    post_text = await asyncio.to_thread(post_writer.execute, article)
     if not post_text:
         log_info("  ↳ Skipped by Post Writer (empty output)")
         return
 
-    # 5. Fix HTML + add signature
-    post_text = fix_html.execute(post_text)
+    # 5. Fix HTML + add signature (fast, but thread for safety)
+    post_text = await asyncio.to_thread(fix_html.execute, post_text)
 
-    # 6. Find creative (video/image)
-    creative = find_creative.execute(article)
+    # 6. Find creative (sync HTTP call → thread)
+    creative = await asyncio.to_thread(find_creative.execute, article)
 
     # 7. Build article data for approval flow
     article_data = {
@@ -83,8 +88,9 @@ async def process_article(article: dict, bot) -> None:
         "relevance_reason": article.get("relevance_reason", ""),
     }
 
-    # 8. Save to Notion (status: Sent for approval)
-    page_id = save_to_notion.create_row(
+    # 8. Save to Notion (sync Notion call → thread)
+    page_id = await asyncio.to_thread(
+        save_to_notion.create_row,
         title=article.get("article_title", ""),
         article_url=article.get("article_url", ""),
         creative_url=creative["creative_url"],
@@ -93,7 +99,7 @@ async def process_article(article: dict, bot) -> None:
     )
     article_data["notion_page_id"] = page_id
 
-    # 9. Send preview to admin channel
+    # 9. Send preview to admin channel (already async)
     callback_id = await post_to_telegram.send_preview(bot, article_data)
     if not callback_id:
         log_error("  ↳ Failed to send admin preview")
@@ -107,10 +113,12 @@ async def run_pipeline(bot) -> None:
     log_section("Pipeline started")
 
     try:
-        # Fetch from all sources
+        # Fetch from all sources (sync HTTP/RSS calls → threads)
         articles = []
-        articles.extend(fetch_rss.execute())
-        articles.extend(fetch_websites.execute())
+        rss_articles = await asyncio.to_thread(fetch_rss.execute)
+        articles.extend(rss_articles)
+        web_articles = await asyncio.to_thread(fetch_websites.execute)
+        articles.extend(web_articles)
 
         if not articles:
             log_info("No new articles found")
