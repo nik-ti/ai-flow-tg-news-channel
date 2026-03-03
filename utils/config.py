@@ -21,6 +21,7 @@ def _require(key: str) -> str:
 # ── Telegram ────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = _require("TELEGRAM_BOT_TOKEN")
 ADMIN_CHANNEL_ID = _require("ADMIN_CHANNEL_ID")
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", ADMIN_CHANNEL_ID)  # Fallback to channel if not set
 MAIN_CHANNEL_ID = os.getenv("MAIN_CHANNEL_ID", "@aiflowdaily")
 RU_CHANNEL_ID = os.getenv("RU_CHANNEL_ID", "@aiflowdaily_ru")
 
