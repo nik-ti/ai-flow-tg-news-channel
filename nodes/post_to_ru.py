@@ -98,6 +98,7 @@ async def execute(bot, ru_post_text: str, creative_type: str, creative_url: str)
                 chat_id=RU_CHANNEL_ID,
                 text=post_text,
                 parse_mode="HTML",
+                disable_web_page_preview=True,
             )
 
         log_info("[RU Post] ✓ Posted to Russian channel")

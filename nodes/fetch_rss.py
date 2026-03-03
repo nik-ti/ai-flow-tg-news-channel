@@ -56,7 +56,7 @@ def _parse_article_detail(article_url: str) -> dict | None:
         resp = requests.post(
             AI_PARSER_URL,
             json={"url": article_url, "page_type": "detail"},
-            timeout=120,
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -113,8 +113,8 @@ def _normalize_rss_article(entry: dict, source_name: str) -> dict | None:
         images = parsed.get("images", [])
         videos = parsed.get("videos", [])
 
-    # Fallback: Use Tavily if parser failed for major sources
-    if not article_text and not rss_text and source_name in ["techcrunch", "theverge"]:
+    # Fallback: Use Tavily if parser failed
+    if not article_text and not rss_text:
         log_info(f"[{source_name}] Parser failed, trying Tavily fallback")
         tavily_data = _tavily_extract(article_url)
         if tavily_data:

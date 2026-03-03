@@ -67,11 +67,16 @@ async def send_preview(bot, article_data: dict) -> str | None:
         elif creative_type == "image" and creative_url and creative_url != "none":
             # Download and send as bytes to bypass Telegram fetch errors
             try:
-                img_resp = sync_requests.get(creative_url, timeout=30, headers={
-                    "User-Agent": "Mozilla/5.0"
-                })
-                img_resp.raise_for_status()
-                photo_bytes = BytesIO(img_resp.content)
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        creative_url,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        ssl=False,
+                    ) as img_resp:
+                        img_resp.raise_for_status()
+                        img_data = await img_resp.read()
+                photo_bytes = BytesIO(img_data)
                 photo_bytes.name = "preview.jpg"
                 await bot.send_photo(
                     chat_id=ADMIN_CHANNEL_ID,
@@ -94,12 +99,14 @@ async def send_preview(bot, article_data: dict) -> str | None:
                         chat_id=ADMIN_CHANNEL_ID,
                         text=f"[Image omitted due to fetch error]\n\n{post_text}",
                         parse_mode="HTML",
+                        disable_web_page_preview=True,
                     )
         else:
             await bot.send_message(
                 chat_id=ADMIN_CHANNEL_ID,
                 text=post_text,
                 parse_mode="HTML",
+                disable_web_page_preview=True,
             )
 
         # Send approval message right after the preview
@@ -174,6 +181,7 @@ async def post_to_main_channel(bot, article_data: dict) -> dict | None:
                 chat_id=MAIN_CHANNEL_ID,
                 text=post_text,
                 parse_mode="HTML",
+                disable_web_page_preview=True,
             )
 
         if result:
