@@ -18,7 +18,7 @@ ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=ce
 
 from utils.config import RSS_FEEDS, AI_PARSER_URL, TAVILY_API_KEY
 from utils.logger import log_info, log_error, log_debug
-from utils.telegram_error import send_error
+import time
 from utils import notion_client
 
 
@@ -50,28 +50,29 @@ def _tavily_extract(article_url: str) -> dict | None:
         return None
 
 
-def _parse_article_detail(article_url: str) -> dict | None:
-    """Call AI parser to get full article content."""
-    try:
-        resp = requests.post(
-            AI_PARSER_URL,
-            json={"url": article_url, "page_type": "detail"},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+def _parse_article_detail(article_url: str, max_retries: int = 2) -> dict | None:
+    """Call AI parser to get full article content. Retries on transient failures."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(
+                AI_PARSER_URL,
+                json={"url": article_url, "page_type": "detail"},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        if data.get("ok") and data.get("data"):
-            return data["data"]
+            if data.get("ok") and data.get("data"):
+                return data["data"]
 
-        error_msg = data.get("error", "Unknown parser error")
-        log_error(f"Parser returned error for {article_url}: {error_msg}")
-        send_error(f"Parser failed for {article_url}: {error_msg}", node_name="fetch_rss")
-        return None
-    except Exception as e:
-        log_error(f"AI parser failed for {article_url}: {e}")
-        send_error(f"Parser API failed (502/Crash) for {article_url}: {e}", node_name="fetch_rss_api")
-        return None
+            error_msg = data.get("error", "Unknown parser error")
+            log_error(f"Parser returned error for {article_url}: {error_msg}")
+            return None
+        except Exception as e:
+            log_error(f"AI parser failed (attempt {attempt}/{max_retries}) for {article_url}: {e}")
+            if attempt < max_retries:
+                time.sleep(3)
+    return None
 
 
 def _normalize_rss_article(entry: dict, source_name: str) -> dict | None:
@@ -163,7 +164,6 @@ def execute() -> list[dict]:
 
         except Exception as e:
             log_error(f"[{source_name}] RSS fetch failed: {e}")
-            send_error(str(e), node_name="fetch_rss")
 
     log_info(f"RSS feeds: {len(articles)} new article(s) found")
     return articles
